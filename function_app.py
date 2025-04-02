@@ -166,7 +166,7 @@ def search_resources(req: func.HttpRequest) -> func.HttpResponse:
                 logging.error(f"Error parsing filter criteria: {str(e)}")
                 return create_error_response(400, "Invalid filter format")
 
-        # Build the aggregation pipeline using concepts from the provided MongoDB code
+        # Build the aggregation pipeline using similar pipeline for resources website
         pipeline = []
         
         # First stage: Text search
@@ -186,43 +186,38 @@ def search_resources(req: func.HttpRequest) -> func.HttpResponse:
         if filter_criteria:
             pipeline.append({"$match": filter_criteria})
         
-        # Get latest version for each resource if no specific version is requested
-        # This mimics the behavior of getLatestVersionPipeline from the provided code
-        resource_versions_requested = filter_criteria.get("resource_version", {}).get("$in", []) if filter_criteria.get("resource_version") else []
-        
-        if not resource_versions_requested:
-            # Sort by version components
-            pipeline.append({
-                "$addFields": {
-                    "version_parts": {
-                        "$map": {
-                            "input": {"$split": ["$resource_version", "."]},
-                            "as": "part",
-                            "in": {"$toInt": "$$part"}
-                        }
+        # Sort by version components
+        pipeline.append({
+            "$addFields": {
+                "version_parts": {
+                    "$map": {
+                        "input": {"$split": ["$resource_version", "."]},
+                        "as": "part",
+                        "in": {"$toInt": "$$part"}
                     }
                 }
-            })
-            
-            pipeline.append({
-                "$sort": {
-                    "id": 1,
-                    "version_parts.0": -1,
-                    "version_parts.1": -1,
-                    "version_parts.2": -1
-                }
-            })
-            
-            pipeline.append({
-                "$group": {
-                    "_id": "$id",
-                    "doc": {"$first": "$$ROOT"}
-                }
-            })
-            
-            pipeline.append({
-                "$replaceRoot": {"newRoot": "$doc"}
-            })
+            }
+        })
+        
+        pipeline.append({
+            "$sort": {
+                "id": 1,
+                "version_parts.0": -1,
+                "version_parts.1": -1,
+                "version_parts.2": -1
+            }
+        })
+        
+        pipeline.append({
+            "$group": {
+                "_id": "$id",
+                "doc": {"$first": "$$ROOT"}
+            }
+        })
+        
+        pipeline.append({
+            "$replaceRoot": {"newRoot": "$doc"}
+        })
         
         # Apply pagination
         pipeline.append({"$skip": (page - 1) * page_size})
