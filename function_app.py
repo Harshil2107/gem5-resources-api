@@ -26,7 +26,7 @@ def create_error_response(status_code: int, message: str) -> func.HttpResponse:
     )
 
 
-@app.route(route="resources/{resource_id}")
+@app.route(route="resources/find-resource-by-id")
 def get_resource_by_id(req: func.HttpRequest) -> func.HttpResponse:
     """
     Get a resource by ID with optional version filter.
@@ -34,13 +34,14 @@ def get_resource_by_id(req: func.HttpRequest) -> func.HttpResponse:
     Route: /resources/{resource_id}
 
     Query Parameters:
+    - resource_id: Required. The id of the resource to find.
     - resource_version: Optional. If provided, returns only the resource with matching ID and version.
     """
 
     logging.info('Processing request to get resource by ID')
     try:
         # Get the resource ID from the route parameter
-        resource_id = req.route_params.get('resource_id')
+        resource_id = req.params.get('resource_id')
         if not resource_id:
             return create_error_response(400, "Resource ID is required")
 
@@ -67,12 +68,12 @@ def get_resource_by_id(req: func.HttpRequest) -> func.HttpResponse:
         logging.error(f"Error fetching resource by ID: {str(e)}")
         return create_error_response(500, "Internal server error")
 
-@app.route(route="resources/search-by-ids")
+@app.route(route="resources/find-resources-in-batch")
 def get_resources_by_batch(req: func.HttpRequest) -> func.HttpResponse:
     """
     Get multiple resources by their IDs and versions.
 
-    Route: /resources/search-by-ids
+    Route: /resources/find-resources-in-batch
 
     Query Parameters:
     - id: Required, can appear multiple times (up to 40)
@@ -110,3 +111,135 @@ def get_resources_by_batch(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         logging.error(f"Error fetching resources by batch: {str(e)}")
         return create_error_response(500, "Internal server error")
+    
+@app.route(route="resources/search")
+def search_resources(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Search resources with filtering capabilities.
+
+    Route: /resources/search
+
+    Query Parameters:
+    - contains-str: Required. The search term to find resources.
+    - must-include: Optional. A CSV-formatted string defining filter criteria.
+    - page: Optional. Page number for pagination (default: 1).
+    - page-size: Optional. Number of results per page (default: 10).
+    """
+    logging.info('Processing request to search resources')
+    try:
+        # Get required search term
+        contains_str = req.params.get('contains-str')
+        if not contains_str:
+            return create_error_response(400, "Search term (contains-str) is required")
+
+        # Get optional filter criteria
+        must_include = req.params.get('must-include')
+        
+        # Get pagination parameters
+        try:
+            page = int(req.params.get('page', 1))
+            page_size = int(req.params.get('page-size', 10))
+        except ValueError:
+            return create_error_response(400, "Invalid pagination parameters")
+
+        # Parse filter criteria
+        filter_criteria = {}
+        if must_include:
+            try:
+                # Parse must-include parameter format: field1,value1,value2;field2,value1,value2
+                for group in must_include.split(';'):
+                    if not group:
+                        continue
+                    parts = group.split(',')
+                    if len(parts) < 2:
+                        return create_error_response(400, "Invalid filter format")
+                    
+                    field = parts[0]
+                    values = parts[1:]
+                    
+                    # Handle special case for gem5_versions which is an array field
+                    if field == "gem5_versions":
+                        filter_criteria[field] = {"$in": values}
+                    else:
+                        filter_criteria[field] = {"$in": values}
+            except Exception as e:
+                logging.error(f"Error parsing filter criteria: {str(e)}")
+                return create_error_response(400, "Invalid filter format")
+
+        # Build the aggregation pipeline using concepts from the provided MongoDB code
+        pipeline = []
+        
+        # First stage: Text search
+        pipeline.append({
+            "$match": {
+                "$or": [
+                    {"id": {"$regex": contains_str, "$options": "i"}},
+                    {"description": {"$regex": contains_str, "$options": "i"}},
+                    {"category": {"$regex": contains_str, "$options": "i"}},
+                    {"architecture": {"$regex": contains_str, "$options": "i"}},
+                    {"tags": {"$regex": contains_str, "$options": "i"}}
+                ]
+            }
+        })
+        
+        # Add filter criteria if present
+        if filter_criteria:
+            pipeline.append({"$match": filter_criteria})
+        
+        # Get latest version for each resource if no specific version is requested
+        # This mimics the behavior of getLatestVersionPipeline from the provided code
+        resource_versions_requested = filter_criteria.get("resource_version", {}).get("$in", []) if filter_criteria.get("resource_version") else []
+        
+        if not resource_versions_requested:
+            # Sort by version components
+            pipeline.append({
+                "$addFields": {
+                    "version_parts": {
+                        "$map": {
+                            "input": {"$split": ["$resource_version", "."]},
+                            "as": "part",
+                            "in": {"$toInt": "$$part"}
+                        }
+                    }
+                }
+            })
+            
+            pipeline.append({
+                "$sort": {
+                    "id": 1,
+                    "version_parts.0": -1,
+                    "version_parts.1": -1,
+                    "version_parts.2": -1
+                }
+            })
+            
+            pipeline.append({
+                "$group": {
+                    "_id": "$id",
+                    "doc": {"$first": "$$ROOT"}
+                }
+            })
+            
+            pipeline.append({
+                "$replaceRoot": {"newRoot": "$doc"}
+            })
+        
+        # Apply pagination
+        pipeline.append({"$skip": (page - 1) * page_size})
+        pipeline.append({"$limit": page_size})
+        
+        # Hide MongoDB _id field
+        pipeline.append({"$project": {"_id": 0}})
+        
+        # Execute the aggregation
+        results = list(collection.aggregate(pipeline))
+        
+        return func.HttpResponse(
+            body=json.dumps(results, default=json_util.default),
+            headers={"Content-Type": "application/json"},
+            status_code=200
+        )
+
+    except Exception as e:
+        logging.error(f"Error searching resources: {str(e)}")
+        return create_error_response(500, f"Internal server error: {str(e)}")
