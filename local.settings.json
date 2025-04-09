@@ -1,0 +1,8 @@
+{
+    "IsEncrypted": false,
+    "Values": {
+      "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+      "MONGO_CONNECTION_STRING": "mongodb+srv://gem5_user:gem5_user@gem5-vision.wp3weei.mongodb.net/",
+      "FUNCTIONS_WORKER_RUNTIME": "python"
+    }
+  }
