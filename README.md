@@ -4,40 +4,44 @@
 
 This document provides step-by-step instructions for setting up, running, and testing an Azure Function that queries a MongoDB database.
 
-## Prerequisites
+## Setting Up the Environment
 
-Ensure the following dependencies and tools are installed before proceeding:
+### 1️ **Create a Virtual Environment**
 
-### Required Software
-
-- **Python 3.10 or 3.11** (Azure Functions does not support Python 3.12 yet)
-
-- **Azure Functions Core Tools**
-
-  ```bash
-  npm install -g azure-functions-core-tools@4 --unsafe-perm true
-  ```
-
-### Required Python Packages
-
-These dependencies must be installed inside a virtual environment:
+Navigate to your project directory:
 
 ```bash
-pip install azure-functions pymongo requests
+cd AzureFunctionsDemo
+```
+
+Create a virtual environment:
+
+```bash
+python -m venv venv
+```
+
+### 2️ **Activate the Virtual Environment**
+
+Activate the virtual environment:
+
+```bash
+source venv/bin/activate  # On Windows, use venv\Scripts\activate
+```
+
+### 3️ **Install Dependencies**
+
+Install all required dependencies using the `requirements.txt` file:
+
+```bash
+pip install -r requirements.txt
+npm install -g azure-functions-core-tools@4 --unsafe-perm true
 ```
 
 ## Running the Azure Function
 
-### 1**Activate the Virtual Environment**
+### 1️ **Set Environment Variables**
 
-```bash
-cd AzureFunctionsDemo
-source venv/bin/activate  # On Windows, use venv\Scripts\activate
-```
-
-### 2️ **Set Environment Variables**
-
-Ensure the `local.settings.json` file contains the correct MongoDB connection string:
+Create the `local.settings.json` file. Ensure that the file contains the correct MongoDB connection string:
 
 ```json
 {
@@ -50,7 +54,9 @@ Ensure the `local.settings.json` file contains the correct MongoDB connection st
 }
 ```
 
-### 3️ **Run the Azure Function Locally**
+### 2️ **Run the Azure Function Locally**
+
+Start the Azure Function locally:
 
 ```bash
 func start
@@ -61,16 +67,18 @@ Expected output:
 ```bash
 Functions:
 
-        get_resources_by_batch:  http://localhost:7071/api/resources/search-by-ids
+        get_resources_by_batch:  http://localhost:7071/api/resources/find-resources-in-batch
 
-        get_resource_by_id:  http://localhost:7071/api/resources/{resource_id}
+        get_resource_by_id:  http://localhost:7071/api/resources/find-resource-by-id
+
+        search_resources:  http://localhost:7071/api/resources/search
 ```
 
 ## Testing the Function
 
 ### **Using Python Script**
 
-Run the test script, make sure Azure functions is running locally:
+Run the test script, ensuring that Azure Functions is running locally:
 
 ```bash
 python3 -m unittest resources_api_tests.py -v
