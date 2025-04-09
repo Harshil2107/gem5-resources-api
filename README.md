@@ -8,12 +8,6 @@ This document provides step-by-step instructions for setting up, running, and te
 
 ### 1️ **Create a Virtual Environment**
 
-Navigate to your project directory:
-
-```bash
-cd AzureFunctionsDemo
-```
-
 Create a virtual environment:
 
 ```bash
