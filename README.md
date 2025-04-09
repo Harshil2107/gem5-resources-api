@@ -24,7 +24,8 @@ source venv/bin/activate  # On Windows, use venv\Scripts\activate
 
 ### 3️ **Install Dependencies**
 
-Install all required dependencies using the `requirements.txt` file:
+Install all required dependencies using the `requirements.txt` file.
+Azure Functions does not support Python 3.13 yet.
 
 ```bash
 pip install -r requirements.txt
