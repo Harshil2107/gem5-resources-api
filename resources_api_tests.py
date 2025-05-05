@@ -13,7 +13,7 @@ class TestResourcesAPIIntegration(unittest.TestCase):
     def test_get_resource_by_id(self):
         """Test retrieving a resource by ID."""
         resource_id = "riscv-ubuntu-20.04-boot"
-        response = requests.get(f"{self.base_url}/resources/find-resource-by-id", params={"resource_id": resource_id})
+        response = requests.get(f"{self.base_url}/resources/find-resource-by-id", params={"id": resource_id})
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertIsInstance(data, list)
@@ -24,7 +24,7 @@ class TestResourcesAPIIntegration(unittest.TestCase):
         """Test retrieving a specific version of a resource."""
         resource_id = "arm-hello64-static"
         resource_version = "1.0.0"
-        response = requests.get(f"{self.base_url}/resources/find-resource-by-id", params={"resource_id": resource_id, "resource_version": resource_version})
+        response = requests.get(f"{self.base_url}/resources/find-resource-by-id", params={"id": resource_id, "resource_version": resource_version})
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -36,7 +36,7 @@ class TestResourcesAPIIntegration(unittest.TestCase):
     def test_get_resource_by_id_not_found(self):
         """Test retrieving a resource that does not exist."""
         resource_id= "non-existent-resource"
-        response = requests.get(f"{self.base_url}/resources/find-resource-by-id",  params={"resource_id": resource_id})
+        response = requests.get(f"{self.base_url}/resources/find-resource-by-id",  params={"id": resource_id})
         self.assertEqual(response.json()["error"], f"Resource with ID '{resource_id}' not found")
         self.assertEqual(response.status_code, 404)
 
@@ -44,7 +44,7 @@ class TestResourcesAPIIntegration(unittest.TestCase):
         """Test retrieving a resource whose id exists but hte version doesnt exist."""
         resource_id = "arm-hello64-static"
         resource_version = "1.1.1"
-        response = requests.get(f"{self.base_url}/resources/find-resource-by-id", params={"resource_id": resource_id, "resource_version": resource_version})
+        response = requests.get(f"{self.base_url}/resources/find-resource-by-id", params={"id": resource_id, "resource_version": resource_version})
         self.assertEqual(response.json()["error"], f"Resource with ID '{resource_id}' not found")
         self.assertEqual(response.status_code, 404)
 

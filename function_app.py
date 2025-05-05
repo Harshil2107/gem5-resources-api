@@ -25,8 +25,8 @@ def create_error_response(status_code: int, message: str) -> func.HttpResponse:
         headers={"Content-Type": "application/json"}
     )
 
-
-@app.route(route="resources/find-resource-by-id")
+@app.function_name(name="get_resource_by_id")
+@app.route(route="resources/find-resource-by-id", auth_level=func.AuthLevel.FUNCTION)
 def get_resource_by_id(req: func.HttpRequest) -> func.HttpResponse:
     """
     Get a resource by ID with optional version filter.
@@ -41,7 +41,7 @@ def get_resource_by_id(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Processing request to get resource by ID')
     try:
         # Get the resource ID from the route parameter
-        resource_id = req.params.get('resource_id')
+        resource_id = req.params.get('id')
         if not resource_id:
             return create_error_response(400, "Resource ID is required")
 
@@ -68,7 +68,8 @@ def get_resource_by_id(req: func.HttpRequest) -> func.HttpResponse:
         logging.error(f"Error fetching resource by ID: {str(e)}")
         return create_error_response(500, "Internal server error")
 
-@app.route(route="resources/find-resources-in-batch")
+@app.function_name(name="get_resources_by_batch")
+@app.route(route="resources/find-resources-in-batch", auth_level=func.AuthLevel.FUNCTION)
 def get_resources_by_batch(req: func.HttpRequest) -> func.HttpResponse:
     """
     Get multiple resources by their IDs and versions.
@@ -83,7 +84,7 @@ def get_resources_by_batch(req: func.HttpRequest) -> func.HttpResponse:
     try:
         query_params = parse_qs(req.url.split('?', 1)[1] if '?' in req.url else '')
         ids = query_params.get('id', [])
-        versions = query_params.get('version', [])
+        versions = query_params.get('resource_version', [])
 
         # Validate inputs
         if not ids or not versions:
@@ -111,8 +112,9 @@ def get_resources_by_batch(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         logging.error(f"Error fetching resources by batch: {str(e)}")
         return create_error_response(500, "Internal server error")
-    
-@app.route(route="resources/search")
+
+@app.function_name(name="search_resources")   
+@app.route(route="resources/search", auth_level=func.AuthLevel.FUNCTION)
 def search_resources(req: func.HttpRequest) -> func.HttpResponse:
     """
     Search resources with filtering capabilities.
@@ -120,20 +122,22 @@ def search_resources(req: func.HttpRequest) -> func.HttpResponse:
     Route: /resources/search
 
     Query Parameters:
-    - contains-str: Required. The search term to find resources.
+    - contains-str: Optional. The search term to find resources.
     - must-include: Optional. A CSV-formatted string defining filter criteria.
+    - sort: Optional. Sort criteria ('date', 'name', 'version', 'id_asc', 'id_desc'). Default is score-based.
     - page: Optional. Page number for pagination (default: 1).
     - page-size: Optional. Number of results per page (default: 10).
     """
     logging.info('Processing request to search resources')
     try:
-        # Get required search term
-        contains_str = req.params.get('contains-str')
-        if not contains_str:
-            return create_error_response(400, "Search term (contains-str) is required")
-
+        # Get search query
+        contains_str = req.params.get('contains-str', "").strip()
+        
         # Get optional filter criteria
         must_include = req.params.get('must-include')
+        
+        # Get sort parameter
+        sort_param = req.params.get('sort')
         
         # Get pagination parameters
         try:
@@ -142,8 +146,13 @@ def search_resources(req: func.HttpRequest) -> func.HttpResponse:
         except ValueError:
             return create_error_response(400, "Invalid pagination parameters")
 
-        # Parse filter criteria
-        filter_criteria = {}
+        # Create query object similar to the one used in the Data API
+        query_object = {
+            "query": contains_str,
+            "sort": sort_param if sort_param else "default"
+        }
+        
+        # Parse filter criteria similar to MongoDB implementation
         if must_include:
             try:
                 # Parse must-include parameter format: field1,value1,value2;field2,value1,value2
@@ -157,84 +166,454 @@ def search_resources(req: func.HttpRequest) -> func.HttpResponse:
                     field = parts[0]
                     values = parts[1:]
                     
-                    # Handle special case for gem5_versions which is an array field
-                    if field == "gem5_versions":
-                        filter_criteria[field] = {"$in": values}
-                    else:
-                        filter_criteria[field] = {"$in": values}
+                    # Add to query object similar to original implementation
+                    query_object[field] = values
             except Exception as e:
                 logging.error(f"Error parsing filter criteria: {str(e)}")
                 return create_error_response(400, "Invalid filter format")
 
-        # Build the aggregation pipeline using similar pipeline for resources website
+        # Build the aggregation pipeline
         pipeline = []
         
-        # First stage: Text search
-        pipeline.append({
-            "$match": {
-                "$or": [
-                    {"id": {"$regex": contains_str, "$options": "i"}},
-                    {"description": {"$regex": contains_str, "$options": "i"}},
-                    {"category": {"$regex": contains_str, "$options": "i"}},
-                    {"architecture": {"$regex": contains_str, "$options": "i"}},
-                    {"tags": {"$regex": contains_str, "$options": "i"}}
-                ]
-            }
-        })
+        # Add search query stage if a query is provided
+        if contains_str:
+            pipeline.extend(get_search_pipeline(query_object))
         
-        # Add filter criteria if present
-        if filter_criteria:
-            pipeline.append({"$match": filter_criteria})
+        # Add filter pipeline stages
+        pipeline.extend(get_filter_pipeline(query_object))
         
-        # Sort by version components
-        pipeline.append({
-            "$addFields": {
-                "version_parts": {
-                    "$map": {
-                        "input": {"$split": ["$resource_version", "."]},
-                        "as": "part",
-                        "in": {"$toInt": "$$part"}
-                    }
-                }
-            }
-        })
+        # Add latest version pipeline
+        pipeline.extend(get_latest_version_pipeline())
         
-        pipeline.append({
-            "$sort": {
-                "id": 1,
-                "version_parts.0": -1,
-                "version_parts.1": -1,
-                "version_parts.2": -1
-            }
-        })
+        # Add sort pipeline
+        pipeline.extend(get_sort_pipeline(query_object))
         
-        pipeline.append({
-            "$group": {
-                "_id": "$id",
-                "doc": {"$first": "$$ROOT"}
-            }
-        })
-        
-        pipeline.append({
-            "$replaceRoot": {"newRoot": "$doc"}
-        })
-        
-        # Apply pagination
-        pipeline.append({"$skip": (page - 1) * page_size})
-        pipeline.append({"$limit": page_size})
-        
-        # Hide MongoDB _id field
-        pipeline.append({"$project": {"_id": 0}})
+        # Add pagination
+        pipeline.extend(get_page_pipeline(page, page_size))
         
         # Execute the aggregation
         results = list(collection.aggregate(pipeline))
         
+        # Process results to match expected output format
+        processed_results = []
+        total_count = 0
+        
+        if results:
+            processed_results = results
+            total_count = results[0].get('totalCount', 0) if results else 0
+            
+            # Remove MongoDB _id field and ensure database field is added
+            for resource in processed_results:
+                if '_id' in resource:
+                    del resource['_id']
+                resource['database'] = "gem5-vision"  # Add database field like in original implementation
+        
+        response_data = {
+            "documents": processed_results,
+            "totalCount": total_count
+        }
+        
         return func.HttpResponse(
-            body=json.dumps(results, default=json_util.default),
+            body=json.dumps(response_data, default=json_util.default),
             headers={"Content-Type": "application/json"},
             status_code=200
         )
 
     except Exception as e:
         logging.error(f"Error searching resources: {str(e)}")
+        return create_error_response(500, f"Internal server error: {str(e)}")
+
+# Helper functions from original implementation
+
+def get_sort(sort):
+    """Return sort object based on sort parameter."""
+    switch_dict = {
+        "date": {"date": -1},
+        "name": {"id": 1},
+        "version": {"ver_latest": -1},
+        "id_asc": {"id": 1},
+        "id_desc": {"id": -1}
+    }
+    return switch_dict.get(sort, {"score": -1})
+
+def get_latest_version_pipeline():
+    """Return pipeline to get latest version of each resource."""
+    return [
+        {
+            "$addFields": {
+                "resource_version_parts": {
+                    "$map": {
+                        "input": {
+                            "$split": ["$resource_version", "."],
+                        },
+                        "as": "item",
+                        "in": {"$toInt": "$$item"},
+                    },
+                },
+            },
+        },
+        {
+            "$sort": {
+                "id": 1,
+                "resource_version_parts.0": -1,
+                "resource_version_parts.1": -1,
+                "resource_version_parts.2": -1,
+                "resource_version_parts.3": -1,
+            },
+        },
+        {
+            "$group": {
+                "_id": "$id",
+                "latest_version": {
+                    "$first": "$resource_version",
+                },
+                "document": {"$first": "$$ROOT"},
+            },
+        },
+        {
+            "$replaceRoot": {
+                "newRoot": {
+                    "$mergeObjects": [
+                        "$document",
+                        {
+                            "id": "$_id",
+                            "latest_version": "$latest_version",
+                        },
+                    ],
+                },
+            },
+        },
+    ]
+
+def get_search_pipeline(query_object):
+    """Return pipeline for text search."""
+    
+    pipeline = [
+        {
+            "$search": {
+                "compound": {
+                    "should": [
+                        {
+                            "text": {
+                                "path": "id",
+                                "query": query_object["query"],
+                                "score": {
+                                    "boost": {
+                                        "value": 10
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "text": {
+                                "path": "gem5_versions",
+                                "query": "24.1",
+                                "score": {
+                                    "boost": {
+                                        "value": 10
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "must": [
+                        {
+                            "text": {
+                                "query": query_object["query"],
+                                "path": [
+                                    "id",
+                                    "desciption",
+                                    "category",
+                                    "architecture",
+                                    "tags"
+                                ],
+                                "fuzzy": {
+                                    "maxEdits": 2,
+                                    "maxExpansions": 100
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "$addFields": {
+                "score": {
+                    "$meta": "searchScore"
+                }
+            }
+        }
+    ]
+
+    return pipeline
+
+def get_filter_pipeline(query_object):
+    """Return pipeline to apply filters."""
+    pipeline = []
+    
+    # Filter by tags
+    if query_object.get("tags"):
+        pipeline.extend([
+            {
+                "$addFields": {
+                    "tag": "$tags",
+                },
+            },
+            {
+                "$unwind": "$tag",
+            },
+            {
+                "$match": {
+                    "tag": {
+                        "$in": query_object["tags"],
+                    },
+                },
+            },
+            {
+                "$group": {
+                    "_id": "$_id",
+                    "doc": {
+                        "$first": "$$ROOT",
+                    },
+                },
+            },
+            {
+                "$replaceRoot": {
+                    "newRoot": "$doc",
+                },
+            },
+        ])
+    
+    # Filter by gem5_versions
+    if query_object.get("gem5_versions"):
+        pipeline.extend([
+            {
+                "$addFields": {
+                    "version": "$gem5_versions",
+                },
+            },
+            {
+                "$unwind": "$version",
+            },
+            {
+                "$match": {
+                    "version": {
+                        "$in": query_object["gem5_versions"],
+                    },
+                },
+            },
+            {
+                "$group": {
+                    "_id": "$_id",
+                    "doc": {
+                        "$first": "$$ROOT",
+                    },
+                },
+            },
+            {
+                "$replaceRoot": {
+                    "newRoot": "$doc",
+                },
+            },
+        ])
+    
+    # Add other filters (category and architecture)
+    match_conditions = []
+    if query_object.get("category"):
+        match_conditions.append({"category": {"$in": query_object["category"]}})
+    
+    if query_object.get("architecture"):
+        match_conditions.append({"architecture": {"$in": query_object["architecture"]}})
+    
+    if match_conditions:
+        pipeline.append({
+            "$match": {
+                "$and": match_conditions
+            }
+        })
+    
+    return pipeline
+
+def get_sort_pipeline(query_object):
+    """Return pipeline to apply sorting."""
+    return [
+        {
+            "$addFields": {
+                "ver_latest": {
+                    "$max": {"$ifNull": ["$gem5_versions", []]},
+                },
+            },
+        },
+        {
+            "$sort": get_sort(query_object.get("sort")),
+        }
+    ]
+
+def get_page_pipeline(current_page, page_size):
+    """Return pipeline to apply pagination."""
+    return [
+        {
+            "$group": {
+                "_id": None,
+                "totalCount": {"$sum": 1},
+                "items": {"$push": "$$ROOT"}
+            }
+        },
+        {
+            "$unwind": "$items"
+        },
+        {
+            "$replaceRoot": {"newRoot": {
+                "$mergeObjects": ["$items", {"totalCount": "$totalCount"}]
+            }}
+        },
+        {
+            "$skip": (current_page - 1) * page_size,
+        },
+        {
+            "$limit": page_size,
+        }
+    ]
+    
+    
+
+@app.route(route="resources/filters", auth_level=func.AuthLevel.FUNCTION)
+def get_filters(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Get distinct categories, architectures, and gem5 versions from the resources collection.
+
+    Route: /resources/filters
+
+    No query parameters required for this endpoint.
+    """
+    logging.info('Processing request to get resource filters')
+    try:
+        # Build the aggregation pipeline to get distinct values
+        pipeline = [
+            {
+                "$unwind": {
+                    "path": "$gem5_versions",
+                    "preserveNullAndEmptyArrays": True
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "category": {"$addToSet": "$category"},
+                    "architecture": {"$addToSet": "$architecture"},
+                    "gem5_versions": {"$addToSet": "$gem5_versions"}
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "category": 1,
+                    "architecture": 1,
+                    "gem5_versions": 1
+                }
+            }
+        ]
+        
+        # Execute the aggregation
+        results = list(collection.aggregate(pipeline))
+        
+        # If no results, return empty arrays
+        if not results:
+            return func.HttpResponse(
+                body=json.dumps({
+                    "category": [],
+                    "architecture": [],
+                    "gem5_versions": []
+                }),
+                headers={"Content-Type": "application/json"},
+                status_code=200
+            )
+        
+        # Process the results
+        filters = results[0]
+        
+        # Filter out null values from architecture
+        if "architecture" in filters:
+            filters["architecture"] = [a for a in filters["architecture"] if a is not None]
+        
+        # Sort the arrays
+        if "category" in filters:
+            filters["category"].sort()
+        if "architecture" in filters:
+            filters["architecture"].sort()
+        if "gem5_versions" in filters:
+            filters["gem5_versions"].sort(reverse=True)
+        
+        return func.HttpResponse(
+            body=json.dumps(filters, default=json_util.default),
+            headers={"Content-Type": "application/json"},
+            status_code=200
+        )
+
+    except Exception as e:
+        logging.error(f"Error getting resource filters: {str(e)}")
+        return create_error_response(500, f"Internal server error: {str(e)}")
+    
+@app.route(route="resources/get-dependent-workloads", auth_level=func.AuthLevel.FUNCTION)
+def get_dependent_workloads(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Find workloads that depend on a specified resource ID.
+
+    Route: /resources/dependent-workloads
+
+    Query Parameters:
+    - id: Required. The resource ID to find dependent workloads for.
+    
+    Returns:
+    - A list of workload that depend on the specified resource.
+    """
+    logging.info('Processing request to find dependent workloads')
+    
+    try:
+        # Get required resource ID parameter
+        resource_id = req.params.get('id')
+        if not resource_id:
+            return create_error_response(400, "Missing required parameter 'id'")
+        
+        # Build pipeline to find dependent workloads
+        pipeline = [
+            {
+                "$match": {
+                    "category": "workload"
+                }
+            },
+            {
+                "$addFields": {
+                    "resources": {
+                        "$objectToArray": "$resources"
+                    }
+                }
+            },
+            {
+                "$unwind": "$resources"
+            },
+            {
+                "$match": {
+                    "resources.v": resource_id
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$id",
+                }
+            }
+        ]
+        
+        # Execute the pipeline
+        workloads = list(collection.aggregate(pipeline))
+        
+        return func.HttpResponse(
+            body=json.dumps(workloads),
+            headers={"Content-Type": "application/json"},
+            status_code=200
+        )
+        
+    except Exception as e:
+        logging.error(f"Error finding dependent workloads: {str(e)}")
         return create_error_response(500, f"Internal server error: {str(e)}")
